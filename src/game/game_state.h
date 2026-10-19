@@ -35,6 +35,17 @@ struct NavInstanceGroup {
     std::vector<PackedInstance> instances;
 };
 
+// One placement of a map-screen model that the engine draws on its own, with a full transform.
+struct NavObject {
+    float world[16]; // row-vector 4x4: model point * world = world point, translation in row 3
+    bool objective;  // tied to a task: the map shows it built or not, by the task's state
+};
+
+struct NavObjectGroup {
+    std::string model;
+    std::vector<NavObject> objects;
+};
+
 // What the engine builds the map screen's models from: its per-level data cache (GAME_LOGIC+0x690),
 // filled when the level loads, long before the map screen is first opened.
 struct LevelNavData {
@@ -42,6 +53,8 @@ struct LevelNavData {
     float maxHeight = 0; // height that the terrain height map's full range stands for
     std::vector<NavInstanceGroup> groups;
     size_t instanceCount = 0;
+    std::vector<NavObjectGroup> objectGroups;
+    size_t objectCount = 0;
 };
 
 struct ScanStatus {

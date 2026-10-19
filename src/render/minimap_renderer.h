@@ -65,6 +65,8 @@ private:
     ID3D11VertexShader* m_modelVs = nullptr;
     ID3D11PixelShader* m_modelPs = nullptr;
     ID3D11InputLayout* m_modelLayout = nullptr;
+    ID3D11VertexShader* m_objectVs = nullptr;
+    ID3D11InputLayout* m_objectLayout = nullptr;
     ID3D11Buffer* m_modelConstants = nullptr;
     ID3D11DepthStencilState* m_depthWrite = nullptr;
     unsigned m_sceneSize = 0;

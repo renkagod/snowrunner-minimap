@@ -61,6 +61,7 @@ set(SHADERS
     "minimap_scene_vs|vs_5_0|VSScene|g_sceneVS"
     "minimap_terrain_ps|ps_5_0|PSTerrain|g_terrainPS"
     "minimap_model_vs|vs_5_0|VSModel|g_modelVS"
+    "minimap_object_vs|vs_5_0|VSObject|g_objectVS"
     "minimap_model_ps|ps_5_0|PSModel|g_modelPS")
 set(SHADER_HEADERS)
 foreach(shader IN LISTS SHADERS)

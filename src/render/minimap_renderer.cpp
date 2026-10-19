@@ -5,6 +5,7 @@
 
 #include "minimap_model_ps.h"
 #include "minimap_model_vs.h"
+#include "minimap_object_vs.h"
 #include "minimap_ps.h"
 #include "minimap_scene_vs.h"
 #include "minimap_terrain_ps.h"
@@ -66,7 +67,8 @@ bool MinimapRenderer::Init(ID3D11Device* device)
               SUCCEEDED(device->CreateVertexShader(g_sceneVS, sizeof(g_sceneVS), nullptr, &m_sceneVs)) &&
               SUCCEEDED(device->CreatePixelShader(g_terrainPS, sizeof(g_terrainPS), nullptr, &m_terrainPs)) &&
               SUCCEEDED(device->CreateVertexShader(g_modelVS, sizeof(g_modelVS), nullptr, &m_modelVs)) &&
-              SUCCEEDED(device->CreatePixelShader(g_modelPS, sizeof(g_modelPS), nullptr, &m_modelPs));
+              SUCCEEDED(device->CreatePixelShader(g_modelPS, sizeof(g_modelPS), nullptr, &m_modelPs)) &&
+              SUCCEEDED(device->CreateVertexShader(g_objectVS, sizeof(g_objectVS), nullptr, &m_objectVs));
 
     // Mesh vertices (slot 0) and the engine's packed instances (slot 1), both 28 bytes.
     const D3D11_INPUT_ELEMENT_DESC layout[] = {
@@ -79,6 +81,17 @@ bool MinimapRenderer::Init(ID3D11Device* device)
     };
     ok = ok && SUCCEEDED(device->CreateInputLayout(layout, static_cast<UINT>(std::size(layout)), g_modelVS,
                                                    sizeof(g_modelVS), &m_modelLayout));
+    // Single objects: the same vertices, and the rows of each object's world matrix (slot 1, 48 bytes).
+    const D3D11_INPUT_ELEMENT_DESC objectLayout[] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 1, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"INSTANCE", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        {"INSTANCE", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        {"INSTANCE", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+    };
+    ok = ok && SUCCEEDED(device->CreateInputLayout(objectLayout, static_cast<UINT>(std::size(objectLayout)),
+                                                   g_objectVS, sizeof(g_objectVS), &m_objectLayout));
 
     D3D11_BUFFER_DESC cb{};
     cb.ByteWidth = sizeof(Constants);
@@ -214,10 +227,14 @@ void MinimapRenderer::DrawScene(ID3D11DeviceContext* context, const MinimapFrame
         const auto& draws = nav.models->Collect(context, frame.playerX, frame.playerZ, radius);
         if (!draws.empty()) {
             context->OMSetDepthStencilState(m_depthWrite, 0);
-            context->IASetInputLayout(m_modelLayout);
-            context->VSSetShader(m_modelVs, nullptr, 0);
             context->PSSetShader(m_modelPs, nullptr, 0);
+            bool objects = !draws.front().object;
             for (const NavModelDraw& draw : draws) {
+                if (draw.object != objects) {
+                    objects = draw.object;
+                    context->IASetInputLayout(objects ? m_objectLayout : m_modelLayout);
+                    context->VSSetShader(objects ? m_objectVs : m_modelVs, nullptr, 0);
+                }
                 D3D11_MAPPED_SUBRESOURCE mapped;
                 if (FAILED(context->Map(m_modelConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
                     break;
@@ -225,8 +242,9 @@ void MinimapRenderer::DrawScene(ID3D11DeviceContext* context, const MinimapFrame
                 for (int i = 0; i < 4; ++i)
                     mc->colour[i] = draw.colour[i];
                 context->Unmap(m_modelConstants, 0);
-                ID3D11Buffer* vbs[2] = {draw.vb, nav.models->InstanceBuffer()};
-                const UINT strides[2] = {28, 28};
+                ID3D11Buffer* vbs[2] = {draw.vb,
+                                        draw.object ? nav.models->ObjectBuffer() : nav.models->InstanceBuffer()};
+                const UINT strides[2] = {28, draw.object ? UINT(sizeof(NavObjectInstance)) : 28u};
                 const UINT offsets[2] = {0, 0};
                 context->IASetVertexBuffers(0, 2, vbs, strides, offsets);
                 context->IASetIndexBuffer(draw.ib, draw.indexFormat, 0);
@@ -349,6 +367,8 @@ void MinimapRenderer::Release()
     SafeRelease(m_modelConstants);
     SafeRelease(m_constants);
     SafeRelease(m_modelLayout);
+    SafeRelease(m_objectLayout);
+    SafeRelease(m_objectVs);
     SafeRelease(m_modelPs);
     SafeRelease(m_modelVs);
     SafeRelease(m_terrainPs);

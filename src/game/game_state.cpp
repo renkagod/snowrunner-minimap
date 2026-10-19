@@ -39,6 +39,15 @@ constexpr size_t kGroupSize = 40;
 constexpr uintptr_t kGroupName = 0x00;      // engine string
 constexpr uintptr_t kGroupInstances = 0x18; // PackedInstance*
 constexpr uintptr_t kGroupCount = 0x20;     // int
+// Models placed one by one (the second half of sub_8d6c80): std::vector of 0x50-byte groups, each a
+// model name and a hash map of its placements.
+constexpr uintptr_t kLevelObjects = 0x48;
+constexpr size_t kObjectGroupSize = 0x50;
+constexpr uintptr_t kObjectBuckets = 0x20;     // node**
+constexpr uintptr_t kObjectBucketCount = 0x28; // int
+constexpr uintptr_t kNodeNext = 0x00;          // node*
+constexpr uintptr_t kNodeKey = 0x08;           // engine string; set for objects tied to a task
+constexpr uintptr_t kNodeWorld = 0x20;         // float 4x4, row vectors
 
 // Fog of war, one object per level of the region (FogOfWar.cpp; the minimap's update binding
 // sub_9b4250 hands +0x08 to sub_8d5170, which uploads it as the map screen's g_txCloaking).
@@ -181,6 +190,50 @@ static bool ReadEngineString(uintptr_t address, std::string& out)
     return mem::SafeCopy(out.data(), chars, header[0]);
 }
 
+// The models the engine places one by one, each with its full transform (levelData+0x48).
+static bool ReadLevelObjects(uintptr_t data, LevelNavData& out)
+{
+    uintptr_t begin = 0, end = 0;
+    if (!mem::Read(data + layout::kLevelObjects, begin) || !mem::Read(data + layout::kLevelObjects + 8, end) ||
+        end < begin || (end - begin) % layout::kObjectGroupSize != 0 || (end - begin) / layout::kObjectGroupSize > 100000)
+        return false;
+    for (uintptr_t group = begin; group < end; group += layout::kObjectGroupSize) {
+        NavObjectGroup g;
+        uintptr_t buckets = 0;
+        int32_t bucketCount = 0;
+        uint32_t nameLength = 0;
+        if (!mem::Read(group + layout::kGroupName, nameLength))
+            return false;
+        if (nameLength == 0) // the engine skips groups without a model name too
+            continue;
+        if (!ReadEngineString(group + layout::kGroupName, g.model) ||
+            !mem::Read(group + layout::kObjectBuckets, buckets) ||
+            !mem::Read(group + layout::kObjectBucketCount, bucketCount) || bucketCount < 0 || bucketCount > 1'000'000)
+            return false;
+        std::vector<uintptr_t> heads(static_cast<size_t>(bucketCount));
+        if (!heads.empty() && !mem::SafeCopy(heads.data(), buckets, heads.size() * sizeof(uintptr_t)))
+            return false;
+        for (uintptr_t node : heads) {
+            for (int chain = 0; node && chain < 100000; ++chain) {
+                NavObject o;
+                uint32_t keyLength = 0;
+                if (!mem::SafeCopy(o.world, node + layout::kNodeWorld, sizeof(o.world)) ||
+                    !mem::Read(node + layout::kNodeKey, keyLength))
+                    return false;
+                o.objective = keyLength != 0;
+                g.objects.push_back(o);
+                if (!mem::Read(node + layout::kNodeNext, node))
+                    return false;
+            }
+        }
+        if (g.objects.empty())
+            continue;
+        out.objectCount += g.objects.size();
+        out.objectGroups.push_back(std::move(g));
+    }
+    return true;
+}
+
 // Copies the map-screen model placement of the given level out of GAME_LOGIC's level data cache.
 // Returns null while the cache holds another level (or nothing yet).
 static std::shared_ptr<LevelNavData> ReadLevelNavData(uintptr_t gameLogic, const std::string& level)
@@ -209,6 +262,12 @@ static std::shared_ptr<LevelNavData> ReadLevelNavData(uintptr_t gameLogic, const
             return nullptr;
         out->instanceCount += g.instances.size();
         out->groups.push_back(std::move(g));
+    }
+
+    if (!ReadLevelObjects(data, *out)) {
+        logger::Warn("Single map objects of '{}' unreadable", level);
+        out->objectGroups.clear();
+        out->objectCount = 0;
     }
     return out;
 }
@@ -334,8 +393,9 @@ static void ScannerThread()
         }
         if (playable && level != navLevel && gameLogic) {
             if (auto nav = ReadLevelNavData(gameLogic, level)) {
-                logger::Info("Map models of '{}': {} groups, {} instances, max height {}", level, nav->groups.size(),
-                             nav->instanceCount, nav->maxHeight);
+                logger::Info("Map models of '{}': {} groups, {} instances, {} single objects of {} models, max height {}",
+                             level, nav->groups.size(), nav->instanceCount, nav->objectCount, nav->objectGroups.size(),
+                             nav->maxHeight);
                 navLevel = level;
                 std::lock_guard lock(g_navMutex);
                 g_navData = std::move(nav);

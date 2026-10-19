@@ -190,7 +190,8 @@ float4 PSTerrain(SceneOut input) : SV_Target
 }
 
 // --- Offscreen map: landmark models -----------------------------------------------------------
-// Follows the disassembly of ModelNavigation.fxs. Instances are the engine's packed transforms.
+// Follows the disassembly of ModelNavigation.fxs. Instances are the engine's packed transforms,
+// single objects carry a world matrix (VSObject).
 
 struct ModelIn
 {
@@ -217,11 +218,8 @@ float3 RotateByQuaternion(float4 q, float3 v)
     return v + q.w * t + cross(q.xyz, t);
 }
 
-ModelOut VSModel(ModelIn v)
+ModelOut ModelVertex(float3 world, float3 normal, float2 uv, float shade)
 {
-    float4 q = normalize((v.rotation - 0.501961) * 2.007874);
-    float scale = dot(v.scale.zw, float2(255, 0.996094));
-    float3 world = RotateByQuaternion(q, v.pos * scale) + v.place.xyz;
     // Like the game, pull anything beyond the terrain's edge back onto it.
     float2 lo = g_navTerrain.xy;
     world.xz -= 0.999 * (min(world.xz - lo - 0.5, 0) + max(world.xz + lo + 0.5, 0));
@@ -229,11 +227,40 @@ ModelOut VSModel(ModelIn v)
     ModelOut o;
     float2 screen = Rotate(world.xz - g_player, -g_mapRotation) / (g_metersAcross * 0.5);
     o.pos = float4(screen, saturate(0.5 - world.y / 4000), 1);
-    o.uv = v.uv;
-    o.normal = RotateByQuaternion(q, (v.normal.xyz - 0.501960) * 2);
+    o.uv = uv;
+    o.normal = normal;
     o.world = world;
-    o.shade = sin(v.place.w);
+    o.shade = shade;
     return o;
+}
+
+ModelOut VSModel(ModelIn v)
+{
+    float4 q = normalize((v.rotation - 0.501961) * 2.007874);
+    float scale = dot(v.scale.zw, float2(255, 0.996094));
+    float3 world = RotateByQuaternion(q, v.pos * scale) + v.place.xyz;
+    return ModelVertex(world, RotateByQuaternion(q, (v.normal.xyz - 0.501960) * 2), v.uv, sin(v.place.w));
+}
+
+// Single objects (towers, service stations, bridges, ...): the engine draws each with its own world
+// matrix (g_tmWorld) and no per-instance shade.
+struct ObjectIn
+{
+    float3 pos : POSITION;
+    float2 uv : TEXCOORD0;
+    float4 normal : TEXCOORD1;
+    float4 row0 : INSTANCE0; // world transform rows: world = row . (pos, 1)
+    float4 row1 : INSTANCE1;
+    float4 row2 : INSTANCE2;
+};
+
+ModelOut VSObject(ObjectIn v)
+{
+    float4 p = float4(v.pos, 1);
+    float3 world = float3(dot(v.row0, p), dot(v.row1, p), dot(v.row2, p));
+    float3 n = (v.normal.xyz - 0.501960) * 2;
+    n = normalize(float3(dot(v.row0.xyz, n), dot(v.row1.xyz, n), dot(v.row2.xyz, n)));
+    return ModelVertex(world, n, v.uv, 1);
 }
 
 float4 PSModel(ModelOut input) : SV_Target
