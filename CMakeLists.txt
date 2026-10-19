@@ -22,7 +22,10 @@ FetchContent_Declare(minhook
     GIT_TAG v1.3.4
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR do-not-configure) # sources are compiled below, its own CMake install rules are not needed
-FetchContent_MakeAvailable(imgui minhook)
+FetchContent_Declare(miniz
+    URL https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip
+    SOURCE_SUBDIR do-not-configure)
+FetchContent_MakeAvailable(imgui minhook miniz)
 
 add_library(third_party STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -34,11 +37,13 @@ add_library(third_party STATIC
     ${minhook_SOURCE_DIR}/src/buffer.c
     ${minhook_SOURCE_DIR}/src/hook.c
     ${minhook_SOURCE_DIR}/src/trampoline.c
-    ${minhook_SOURCE_DIR}/src/hde/hde64.c)
+    ${minhook_SOURCE_DIR}/src/hde/hde64.c
+    ${miniz_SOURCE_DIR}/miniz.c)
 target_include_directories(third_party PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
-    ${minhook_SOURCE_DIR}/include)
+    ${minhook_SOURCE_DIR}/include
+    ${miniz_SOURCE_DIR})
 target_compile_definitions(third_party PUBLIC
     IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS IMGUI_DISABLE_WIN32_DEFAULT_IME_FUNCTIONS
     WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -72,6 +77,7 @@ add_library(SnowMinimap SHARED
     src/render/minimap_renderer.cpp
     src/render/game_terrain.cpp
     src/render/map_texture.cpp
+    src/render/pak_assets.cpp
     src/ui/overlay.cpp
     ${SHADER_OUT}/minimap_vs.h
     ${SHADER_OUT}/minimap_ps.h)

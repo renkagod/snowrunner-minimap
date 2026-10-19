@@ -16,11 +16,22 @@ cbuffer Minimap : register(b0)
     float  g_hasTruck;
     float  g_hasRelief;   // set when the colour layer is unshaded (the game's own terrain bake)
     float  g_pad;
+    // Map-screen look, rebuilt from the game's MinimapNavigation shader (see NavColor).
+    float4 g_navTerrain;  // terrain min X, min Z, size in metres, height of the full height range
+    float4 g_navTexel;    // 1 / fog-of-war size, 1 / height map size, unused, has nav inputs
+    float4 g_navTone;     // exposure, white scale, detail tiling, detail power
 };
 
 Texture2D g_map : register(t0);
 Texture2D g_relief : register(t1);
+Texture2D g_tint : register(t2);      // level colour map, alpha marks land; row 0 = south
+Texture2D g_cloaking : register(t3);  // fog of war: 1 revealed, 0.5 explored, 0 hidden; row 0 = south
+Texture2D g_height : register(t4);    // R16 heights, 0.5 m per texel, centred on the origin; row 0 = north
+Texture2D g_detail : register(t5);
+Texture3D g_lut : register(t6);
 SamplerState g_sampler : register(s0);
+SamplerState g_wrap : register(s1);
+SamplerState g_linear : register(s2);
 
 struct VSOut
 {
@@ -62,6 +73,60 @@ float SdPolygon4(float2 p, float2 v[4])
     return s * sqrt(d);
 }
 
+float HeightAt(float2 world)
+{
+    float size = 1.0 / g_navTexel.y;
+    float2 texel = float2(world.x + (size - 1) * 0.25, (size - 1) * 0.25 - world.y) * 2.0 + 0.5;
+    return g_height.SampleLevel(g_linear, texel * g_navTexel.y, 0).r * g_navTerrain.w;
+}
+
+float3 Uncharted2(float3 x)
+{
+    const float A = 0.1, B = 0.5, C = 0.1, D = 0.3, E = 0.02, F = 0.3;
+    return (x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F) - E / F;
+}
+
+// The game's map-screen terrain colour for a world position, seen from straight above.
+// Follows the disassembly of MinimapNavigation.fxs (pixel shader) with the post-processing chain
+// of the map screen (filmic tone map, sRGB, minimap colour LUT); constants are the captured ones.
+float3 NavColor(float2 world, out bool onTerrain)
+{
+    float2 uv = (world - g_navTerrain.xy) / g_navTerrain.z;
+    onTerrain = all(uv >= 0) && all(uv <= 1);
+
+    // Normal from the height map; the game decodes it per vertex instead.
+    const float e = 1.0;
+    float hx = HeightAt(world + float2(e, 0)) - HeightAt(world - float2(e, 0));
+    float hz = HeightAt(world + float2(0, e)) - HeightAt(world - float2(0, e));
+    float3 n = normalize(float3(-hx, 2 * e, -hz));
+    float3 v = float3(0, 1, 0);
+
+    float detail = g_detail.Sample(g_wrap, uv * g_navTone.z).r;
+    float4 tint = g_tint.Sample(g_sampler, uv);
+    float land = saturate((tint.a - 0.8) * 5);
+    float3 color = tint.rgb * n.y * pow(saturate(land + detail), g_navTone.w);
+    float ndv = dot(n, v);
+    color *= 1 + min(pow(ndv, 4), 1);
+    // Sky reflection: the game samples its environment cube along the reflected view ray.
+    const float3 sky = float3(0.811969, 1.21528, 1.80069) * 0.45;
+    color += land * (sky - color) * 0.1;
+    float lum = dot(color, float3(0.2125, 0.7154, 0.0721)) * 0.4;
+
+    float t = g_navTexel.x;
+    float fog = g_cloaking.SampleLevel(g_linear, uv + float2(-0.5, 0.5) * t, 0).r +
+                g_cloaking.SampleLevel(g_linear, uv + float2(-0.5, -0.5) * t, 0).r +
+                g_cloaking.SampleLevel(g_linear, uv + float2(0.5, -0.5) * t, 0).r +
+                g_cloaking.SampleLevel(g_linear, uv + float2(0.5, 0.5) * t, 0).r +
+                g_cloaking.SampleLevel(g_linear, uv, 0).r;
+    float revealed = saturate(fog - 2.5);
+    float visible = saturate((fog * 0.2 - 0.25) * 4);
+    color = visible * lerp(lum.xxx, color, revealed);
+
+    float3 x = saturate(Uncharted2(color * g_navTone.x) * g_navTone.y);
+    float3 srgb = x < 0.003131 ? x * 12.92 : 1.055 * pow(x, 1 / 2.4) - 0.055;
+    return g_lut.SampleLevel(g_linear, srgb * (15.0 / 16.0) + 0.5 / 16.0, 0).rgb;
+}
+
 float4 PSMain(VSOut input) : SV_Target
 {
     float radiusPx = g_rect.z * 0.5;
@@ -74,7 +139,8 @@ float4 PSMain(VSOut input) : SV_Target
     float metersPerPx = g_metersAcross / g_rect.z;
     float2 world = g_player + Rotate(screen * (g_metersAcross * 0.5), g_mapRotation);
 
-    // Terrain: map texture where we have one, otherwise a 100 m grid so movement is still readable.
+    // Terrain: the game's map-screen look when its inputs are captured, else a map texture where
+    // we have one, otherwise a 100 m grid so movement is still readable.
     float3 color = float3(0.13, 0.15, 0.16);
     float2 uv = (world - g_mapRect.xy) / g_mapRect.zw;
     float2 reliefUv = (world - g_reliefRect.xy) / g_reliefRect.zw;
@@ -82,7 +148,14 @@ float4 PSMain(VSOut input) : SV_Target
     // The game's bake is larger than the level; its unused part is black, so clip to the terrain.
     if (g_hasRelief > 0.5)
         onMap = onMap && all(reliefUv >= 0) && all(reliefUv <= 1);
-    if (onMap)
+    if (g_navTexel.w > 0.5)
+    {
+        bool onTerrain;
+        color = NavColor(world, onTerrain);
+        if (!onTerrain)
+            color = 0;
+    }
+    else if (onMap)
     {
         color = g_map.Sample(g_sampler, uv).rgb;
         if (g_hasRelief > 0.5)

@@ -24,6 +24,9 @@ struct alignas(16) Constants {
     float hasTruck;
     float hasRelief;
     float pad;
+    float navTerrain[4];
+    float navTexel[4];
+    float navTone[4];
 };
 static_assert(sizeof(Constants) % 16 == 0);
 
@@ -68,6 +71,11 @@ bool MinimapRenderer::Init(ID3D11Device* device)
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampler.MaxLOD = D3D11_FLOAT32_MAX;
     ok = ok && SUCCEEDED(device->CreateSamplerState(&sampler, &m_sampler));
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    ok = ok && SUCCEEDED(device->CreateSamplerState(&sampler, &m_wrap));
+    sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    ok = ok && SUCCEEDED(device->CreateSamplerState(&sampler, &m_linear));
 
     D3D11_RASTERIZER_DESC raster{};
     raster.FillMode = D3D11_FILL_SOLID;
@@ -86,8 +94,9 @@ bool MinimapRenderer::Init(ID3D11Device* device)
 }
 
 void MinimapRenderer::Draw(ID3D11DeviceContext* context, const MinimapFrame& frame, const MapLayer& colour,
-                           const MapLayer& relief)
+                           const MapLayer& relief, const NavInputs& nav)
 {
+    const bool useNav = nav.Complete();
     if (!m_vs)
         return;
 
@@ -119,6 +128,21 @@ void MinimapRenderer::Draw(ID3D11DeviceContext* context, const MinimapFrame& fra
     c->hasMap = colour.srv ? 1.0f : 0.0f;
     c->hasTruck = frame.hasTruck ? 1.0f : 0.0f;
     c->hasRelief = relief.srv ? 1.0f : 0.0f;
+    if (useNav) {
+        // Terrain rectangle as the game's shaders get it (g_vTerrainSize): heights are 0.5 m apart
+        // and centred on the origin, the colour and fog maps span half a metre more.
+        const float n = static_cast<float>(nav.heightSize);
+        c->navTerrain[0] = c->navTerrain[1] = -(n - 1) * 0.25f;
+        c->navTerrain[2] = (n + 1) * 0.5f;
+        c->navTerrain[3] = nav.maxHeight > 0 ? nav.maxHeight : 200.0f;
+        c->navTexel[0] = 1.0f / nav.cloakingSize;
+        c->navTexel[1] = 1.0f / n;
+        c->navTexel[3] = 1.0f;
+        c->navTone[0] = nav.exposure;
+        c->navTone[1] = 6.273f; // captured white scale
+        c->navTone[2] = 50.0f;  // g_vDetailTiling
+        c->navTone[3] = 2.0f;   // g_fDetailPower
+    }
     context->Unmap(m_constants, 0);
 
     D3D11_VIEWPORT vp{0, 0, frame.viewportW, frame.viewportH, 0, 1};
@@ -132,13 +156,21 @@ void MinimapRenderer::Draw(ID3D11DeviceContext* context, const MinimapFrame& fra
     context->VSSetConstantBuffers(0, 1, &m_constants);
     context->PSSetShader(m_ps, nullptr, 0);
     context->PSSetConstantBuffers(0, 1, &m_constants);
-    ID3D11ShaderResourceView* srvs[2] = {colour.srv, relief.srv};
-    context->PSSetShaderResources(0, 2, srvs);
-    context->PSSetSamplers(0, 1, &m_sampler);
+    ID3D11ShaderResourceView* srvs[7] = {colour.srv, relief.srv};
+    if (useNav) {
+        srvs[2] = nav.tint;
+        srvs[3] = nav.cloaking;
+        srvs[4] = nav.height;
+        srvs[5] = nav.detail;
+        srvs[6] = nav.lut;
+    }
+    context->PSSetShaderResources(0, 7, srvs);
+    ID3D11SamplerState* samplers[3] = {m_sampler, m_wrap, m_linear};
+    context->PSSetSamplers(0, 3, samplers);
     context->Draw(4, 0);
 
-    ID3D11ShaderResourceView* nullSrvs[2] = {};
-    context->PSSetShaderResources(0, 2, nullSrvs);
+    ID3D11ShaderResourceView* nullSrvs[7] = {};
+    context->PSSetShaderResources(0, 7, nullSrvs);
 }
 
 void MinimapRenderer::Release()
@@ -146,6 +178,8 @@ void MinimapRenderer::Release()
     SafeRelease(m_depth);
     SafeRelease(m_raster);
     SafeRelease(m_sampler);
+    SafeRelease(m_wrap);
+    SafeRelease(m_linear);
     SafeRelease(m_blend);
     SafeRelease(m_constants);
     SafeRelease(m_ps);

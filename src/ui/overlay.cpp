@@ -9,6 +9,7 @@
 #include "render/game_terrain.h"
 #include "render/map_texture.h"
 #include "render/minimap_renderer.h"
+#include "render/pak_assets.h"
 
 #include <d3d11_1.h>
 #include <imgui.h>
@@ -39,6 +40,8 @@ std::string g_imguiIni;
 
 render::MinimapRenderer g_renderer;
 render::GameTerrain g_gameTerrain;
+render::NavTextures g_navTextures;     // live inputs of the game's map-screen shading
+render::PakAssets g_pakAssets;
 render::MapTexture g_map("");          // colour image from the paks, used until the game's bake is found
 render::MapTexture g_relief("_relief"); // shading laid over the game's unshaded bake
 
@@ -120,7 +123,7 @@ bool Init(IDXGISwapChain* swapChain)
 
     if (!g_renderer.Init(g_device))
         return false;
-    render::GameTerrain::InstallHook(g_device);
+    render::InstallTextureHook(g_device);
 
     logger::Info("Overlay ready: hwnd={} feature level {:#x}, creation flags {:#x}", static_cast<void*>(g_hwnd),
                  static_cast<unsigned>(g_device->GetFeatureLevel()), g_device->GetCreationFlags());
@@ -195,12 +198,15 @@ void DrawDebugWindow(const game::TruckPose& pose)
                 ImGui::Text("Axis +%#x  %6.3f %6.3f %6.3f", 0x90 + i * 0x10, pose.axis[i].x, pose.axis[i].y,
                             pose.axis[i].z);
             ImGui::Text("Heading %.1f deg", pose.headingRad * 180.0f / 3.14159265f);
+            ImGui::Text("Game screen open: %s", game::IsScreenOpen() ? "yes (minimap hidden)" : "no");
         } else {
             ImGui::TextUnformatted("No truck (menu, garage or pointer chain not resolved)");
         }
     }
 
     if (ImGui::CollapsingHeader("Map", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextUnformatted(g_navTextures.Status().c_str());
+        ImGui::Text("%s; terrain max height %.1f m", g_pakAssets.Status().c_str(), game::TerrainMaxHeight());
         ImGui::TextUnformatted(g_gameTerrain.Status().c_str());
         ImGui::TextUnformatted(g_map.Status().c_str());
         ImGui::TextUnformatted(g_relief.Status().c_str());
@@ -213,6 +219,9 @@ void DrawDebugWindow(const game::TruckPose& pose)
         ImGui::Checkbox("Show minimap", &cfg.enabled);
         ImGui::SameLine();
         ImGui::Checkbox("Rotate with truck", &cfg.rotateWithTruck);
+        ImGui::SameLine();
+        ImGui::Checkbox("Map screen look", &cfg.mapScreenLook);
+        ImGui::SliderFloat("Map exposure", &cfg.mapExposure, 0.3f, 4.0f, "%.2f");
         ImGui::SliderInt("Size (px at 1080p)", &cfg.sizePx, 120, 700);
         ImGui::SliderFloat("Metres across", &cfg.metersAcross, 25, 4000, "%.0f", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Opacity", &cfg.opacity, 0.1f, 1.0f);
@@ -258,6 +267,7 @@ void OnPresent(IDXGISwapChain* swapChain)
     g_map.RequestLevel(level);
     g_relief.RequestLevel(level);
     const game::TruckPose pose = game::ReadTruck();
+    const bool screenOpen = game::IsScreenOpen();
 
     ID3D11Texture2D* backBuffer = nullptr;
     if (FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
@@ -287,10 +297,13 @@ void OnPresent(IDXGISwapChain* swapChain)
     g_map.Update(g_device, g_context);
     g_relief.Update(g_device, g_context);
     g_gameTerrain.Update(g_device, g_context);
+    g_navTextures.Update(g_device);
+    g_pakAssets.Load(g_device);
+    game::SetHeightMapSize(g_navTextures.HeightSize());
     g_context->OMSetRenderTargets(1, &rtv, nullptr);
 
     const config::Settings& cfg = config::Get();
-    if (cfg.enabled && inLevel) {
+    if (cfg.enabled && inLevel && !screenOpen) {
         const float scale = bbDesc.Height / 1080.0f;
         const float size = cfg.sizePx * scale;
         const float mx = cfg.marginX * scale, my = cfg.marginY * scale;
@@ -320,7 +333,20 @@ void OnPresent(IDXGISwapChain* swapChain)
                            -(g_gameTerrain.Height() * kGameTerrainMetersPerPixel)};
             relief = {g_relief.Srv(), terrain};
         }
-        g_renderer.Draw(g_context, frame, colour, relief);
+        // Best of all: the game's own map-screen shading, fed with its live textures.
+        render::NavInputs nav;
+        if (cfg.mapScreenLook && g_navTextures.Ready() && g_pakAssets.Ready()) {
+            nav.tint = g_navTextures.Tint();
+            nav.cloaking = g_navTextures.Cloaking();
+            nav.height = g_navTextures.Height();
+            nav.cloakingSize = g_navTextures.CloakingSize();
+            nav.heightSize = g_navTextures.HeightSize();
+            nav.detail = g_pakAssets.Detail();
+            nav.lut = g_pakAssets.Lut();
+            nav.maxHeight = game::TerrainMaxHeight();
+            nav.exposure = cfg.mapExposure;
+        }
+        g_renderer.Draw(g_context, frame, colour, relief, nav);
     }
 
     if (g_debugVisible) {

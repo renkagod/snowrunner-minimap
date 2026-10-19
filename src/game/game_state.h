@@ -35,6 +35,15 @@ std::string CurrentLevel();
 // Reads the player's truck right now. Cheap; meant to be called once per frame.
 TruckPose ReadTruck();
 
+// Height in metres that the terrain height map's full range stands for (186 on Black River).
+// The engine only keeps it in its shader constants, so it is found by scanning memory for them
+// once the height map's size is known; 0 until found.
+void SetHeightMapSize(unsigned size);
+float TerrainMaxHeight();
+
+// True while a game screen (pause menu, map, ...) has taken the truck's input.
+bool IsScreenOpen();
+
 ScanStatus GetStatus();
 
 } // namespace game

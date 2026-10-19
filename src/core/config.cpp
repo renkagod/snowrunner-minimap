@@ -64,6 +64,8 @@ void Load()
     s.metersAcross = std::clamp(ReadFloat(L"minimap", L"meters_across", d.metersAcross), 25.0f, 4000.0f);
     s.rotateWithTruck = ReadInt(L"minimap", L"rotate_with_truck", d.rotateWithTruck) != 0;
     s.opacity = std::clamp(ReadFloat(L"minimap", L"opacity", d.opacity), 0.1f, 1.0f);
+    s.mapScreenLook = ReadInt(L"minimap", L"map_screen_look", d.mapScreenLook) != 0;
+    s.mapExposure = std::clamp(ReadFloat(L"minimap", L"map_exposure", d.mapExposure), 0.1f, 8.0f);
 
     s.keyToggle = ReadInt(L"keys", L"toggle", d.keyToggle);
     s.keyDebug = ReadInt(L"keys", L"debug", d.keyDebug);
@@ -93,6 +95,8 @@ void Save()
     WriteFloat(L"minimap", L"meters_across", s.metersAcross);
     WriteInt(L"minimap", L"rotate_with_truck", s.rotateWithTruck);
     WriteFloat(L"minimap", L"opacity", s.opacity);
+    WriteInt(L"minimap", L"map_screen_look", s.mapScreenLook);
+    WriteFloat(L"minimap", L"map_exposure", s.mapExposure);
 
     WriteInt(L"keys", L"toggle", s.keyToggle);
     WriteInt(L"keys", L"debug", s.keyDebug);
