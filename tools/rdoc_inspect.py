@@ -56,7 +56,7 @@ def main(log):
             log.write(f"  {stage} shader {state.GetShader(stage)} entry {refl.entryPoint if refl else '-'}\n")
             for used in state.GetReadOnlyResources(stage, True):
                 rid = used.descriptor.resource
-                log.write(f"    srv t{used.access.index}: {tex(rid)}\n")
+                log.write(f"    srv t{used.access.index}: {tex(rid)} view {used.descriptor.format.Name()}\n")
                 if rid in textures and stage == rd.ShaderStage.Pixel:
                     save = rd.TextureSave()
                     save.resourceId = rid

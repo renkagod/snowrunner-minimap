@@ -6,6 +6,8 @@
 
 namespace render {
 
+class NavModels;
+
 struct MinimapFrame {
     float left, top, size;        // on-screen square in pixels
     float viewportW, viewportH;
@@ -35,6 +37,7 @@ struct NavInputs {
     unsigned heightSize = 0;
     float maxHeight = 0;
     float exposure = 1.47f;
+    NavModels* models = nullptr; // landmark models drawn over the terrain when set
 
     bool Complete() const { return tint && cloaking && height && detail && lut && cloakingSize && heightSize; }
 };
@@ -50,8 +53,28 @@ public:
     void Release();
 
 private:
+    // Offscreen map the size of the minimap: multisampled colour and depth, plus the resolved copy.
+    bool EnsureScene(ID3D11Device* device, unsigned size);
+    void ReleaseScene();
+    void DrawScene(ID3D11DeviceContext* context, const MinimapFrame& frame, const NavInputs& nav);
+
     ID3D11VertexShader* m_vs = nullptr;
     ID3D11PixelShader* m_ps = nullptr;
+    ID3D11VertexShader* m_sceneVs = nullptr;
+    ID3D11PixelShader* m_terrainPs = nullptr;
+    ID3D11VertexShader* m_modelVs = nullptr;
+    ID3D11PixelShader* m_modelPs = nullptr;
+    ID3D11InputLayout* m_modelLayout = nullptr;
+    ID3D11Buffer* m_modelConstants = nullptr;
+    ID3D11DepthStencilState* m_depthWrite = nullptr;
+    unsigned m_sceneSize = 0;
+    unsigned m_sceneSamples = 1;
+    ID3D11Texture2D* m_sceneMs = nullptr;
+    ID3D11RenderTargetView* m_sceneRtv = nullptr;
+    ID3D11Texture2D* m_sceneDepth = nullptr;
+    ID3D11DepthStencilView* m_sceneDsv = nullptr;
+    ID3D11Texture2D* m_sceneResolved = nullptr;
+    ID3D11ShaderResourceView* m_sceneSrv = nullptr;
     ID3D11Buffer* m_constants = nullptr;
     ID3D11BlendState* m_blend = nullptr;
     ID3D11SamplerState* m_sampler = nullptr;

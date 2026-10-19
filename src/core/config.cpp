@@ -66,6 +66,7 @@ void Load()
     s.opacity = std::clamp(ReadFloat(L"minimap", L"opacity", d.opacity), 0.1f, 1.0f);
     s.mapScreenLook = ReadInt(L"minimap", L"map_screen_look", d.mapScreenLook) != 0;
     s.mapExposure = std::clamp(ReadFloat(L"minimap", L"map_exposure", d.mapExposure), 0.1f, 8.0f);
+    s.mapModels = ReadInt(L"minimap", L"map_models", d.mapModels) != 0;
 
     s.keyToggle = ReadInt(L"keys", L"toggle", d.keyToggle);
     s.keyDebug = ReadInt(L"keys", L"debug", d.keyDebug);
@@ -97,6 +98,7 @@ void Save()
     WriteFloat(L"minimap", L"opacity", s.opacity);
     WriteInt(L"minimap", L"map_screen_look", s.mapScreenLook);
     WriteFloat(L"minimap", L"map_exposure", s.mapExposure);
+    WriteInt(L"minimap", L"map_models", s.mapModels);
 
     WriteInt(L"keys", L"toggle", s.keyToggle);
     WriteInt(L"keys", L"debug", s.keyDebug);

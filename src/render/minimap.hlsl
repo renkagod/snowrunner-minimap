@@ -1,4 +1,7 @@
-// Round minimap drawn as one screen-space quad.
+// Round minimap drawn as one screen-space quad (VSMain/PSMain).
+// With the map-screen look, the map is first rendered in linear colour into an offscreen target the
+// size of the quad: the terrain (VSScene/PSTerrain), then the landmark models (VSModel/PSModel).
+// PSMain then tone maps it and adds the rim and the truck arrow.
 // World axes: X = east, Z = north. Headings are radians clockwise from north.
 
 cbuffer Minimap : register(b0)
@@ -18,8 +21,13 @@ cbuffer Minimap : register(b0)
     float  g_pad;
     // Map-screen look, rebuilt from the game's MinimapNavigation shader (see NavColor).
     float4 g_navTerrain;  // terrain min X, min Z, size in metres, height of the full height range
-    float4 g_navTexel;    // 1 / fog-of-war size, 1 / height map size, unused, has nav inputs
+    float4 g_navTexel;    // 1 / fog-of-war size, 1 / height map size, unused, map-screen look (scene rendered)
     float4 g_navTone;     // exposure, white scale, detail tiling, detail power
+};
+
+cbuffer Model : register(b1)
+{
+    float4 g_modelColour; // linear diffuse multiplier; w = 1 when g_albedo is bound
 };
 
 Texture2D g_map : register(t0);
@@ -29,6 +37,8 @@ Texture2D g_cloaking : register(t3);  // fog of war: 1 revealed, 0.5 explored, 0
 Texture2D g_height : register(t4);    // R16 heights, 0.5 m per texel, centred on the origin; row 0 = north
 Texture2D g_detail : register(t5);
 Texture3D g_lut : register(t6);
+Texture2D g_scene : register(t7);     // offscreen map in linear colour, alpha = on terrain
+Texture2D g_albedo : register(t8);    // landmark model colour (mostly the shared palette), sRGB view
 SamplerState g_sampler : register(s0);
 SamplerState g_wrap : register(s1);
 SamplerState g_linear : register(s2);
@@ -86,10 +96,46 @@ float3 Uncharted2(float3 x)
     return (x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F) - E / F;
 }
 
-// The game's map-screen terrain colour for a world position, seen from straight above.
-// Follows the disassembly of MinimapNavigation.fxs (pixel shader) with the post-processing chain
-// of the map screen (filmic tone map, sRGB, minimap colour LUT); constants are the captured ones.
-float3 NavColor(float2 world, out bool onTerrain)
+// Fog of war as both map-screen shaders apply it: hidden ground goes black, explored ground grey.
+float3 ApplyFog(float3 color, float2 uv)
+{
+    float lum = dot(color, float3(0.2125, 0.7154, 0.0721)) * 0.4;
+    float t = g_navTexel.x;
+    float fog = g_cloaking.SampleLevel(g_linear, uv + float2(-0.5, 0.5) * t, 0).r +
+                g_cloaking.SampleLevel(g_linear, uv + float2(-0.5, -0.5) * t, 0).r +
+                g_cloaking.SampleLevel(g_linear, uv + float2(0.5, -0.5) * t, 0).r +
+                g_cloaking.SampleLevel(g_linear, uv + float2(0.5, 0.5) * t, 0).r +
+                g_cloaking.SampleLevel(g_linear, uv, 0).r;
+    float revealed = saturate(fog - 2.5);
+    float visible = saturate((fog * 0.2 - 0.25) * 4);
+    return visible * lerp(lum.xxx, color, revealed);
+}
+
+// The map screen's post-processing chain: filmic tone map, sRGB, minimap colour LUT.
+float3 ToneMap(float3 color)
+{
+    float3 x = saturate(Uncharted2(color * g_navTone.x) * g_navTone.y);
+    float3 srgb = x < 0.003131 ? x * 12.92 : 1.055 * pow(x, 1 / 2.4) - 0.055;
+    return g_lut.SampleLevel(g_linear, srgb * (15.0 / 16.0) + 0.5 / 16.0, 0).rgb;
+}
+
+// World direction the top of the minimap shows.
+float2 MapForward()
+{
+    return Rotate(float2(0, 1), g_mapRotation);
+}
+
+// Direction toward the map screen's camera, which looks along MapForward() tilted 45 degrees down.
+float3 ToEye()
+{
+    float2 forward = MapForward();
+    return float3(-forward.x * 0.707107, 0.707107, -forward.y * 0.707107);
+}
+
+// The game's map-screen terrain colour (linear, before ToneMap) for a world position, shaded for
+// the map camera's view (see ToEye). Follows the disassembly of MinimapNavigation.fxs (pixel
+// shader); constants are the captured ones.
+float3 NavLinear(float2 world, out bool onTerrain)
 {
     float2 uv = (world - g_navTerrain.xy) / g_navTerrain.z;
     onTerrain = all(uv >= 0) && all(uv <= 1);
@@ -99,7 +145,7 @@ float3 NavColor(float2 world, out bool onTerrain)
     float hx = HeightAt(world + float2(e, 0)) - HeightAt(world - float2(e, 0));
     float hz = HeightAt(world + float2(0, e)) - HeightAt(world - float2(0, e));
     float3 n = normalize(float3(-hx, 2 * e, -hz));
-    float3 v = float3(0, 1, 0);
+    float3 v = ToEye(); // the game's Fresnel terms assume its tilted map camera
 
     float detail = g_detail.Sample(g_wrap, uv * g_navTone.z).r;
     float4 tint = g_tint.Sample(g_sampler, uv);
@@ -110,21 +156,105 @@ float3 NavColor(float2 world, out bool onTerrain)
     // Sky reflection: the game samples its environment cube along the reflected view ray.
     const float3 sky = float3(0.811969, 1.21528, 1.80069) * 0.45;
     color += land * (sky - color) * 0.1;
-    float lum = dot(color, float3(0.2125, 0.7154, 0.0721)) * 0.4;
+    return ApplyFog(color, uv);
+}
 
-    float t = g_navTexel.x;
-    float fog = g_cloaking.SampleLevel(g_linear, uv + float2(-0.5, 0.5) * t, 0).r +
-                g_cloaking.SampleLevel(g_linear, uv + float2(-0.5, -0.5) * t, 0).r +
-                g_cloaking.SampleLevel(g_linear, uv + float2(0.5, -0.5) * t, 0).r +
-                g_cloaking.SampleLevel(g_linear, uv + float2(0.5, 0.5) * t, 0).r +
-                g_cloaking.SampleLevel(g_linear, uv, 0).r;
-    float revealed = saturate(fog - 2.5);
-    float visible = saturate((fog * 0.2 - 0.25) * 4);
-    color = visible * lerp(lum.xxx, color, revealed);
+// World position shown at a point of the minimap (-1..1 across it, y up).
+float2 WorldAt(float2 screen)
+{
+    return g_player + Rotate(screen * (g_metersAcross * 0.5), g_mapRotation);
+}
 
-    float3 x = saturate(Uncharted2(color * g_navTone.x) * g_navTone.y);
-    float3 srgb = x < 0.003131 ? x * 12.92 : 1.055 * pow(x, 1 / 2.4) - 0.055;
-    return g_lut.SampleLevel(g_linear, srgb * (15.0 / 16.0) + 0.5 / 16.0, 0).rgb;
+// --- Offscreen map: terrain -------------------------------------------------------------------
+
+struct SceneOut
+{
+    float4 pos : SV_Position;
+    float2 screen : TEXCOORD0; // -1..1, y up
+};
+
+SceneOut VSScene(uint id : SV_VertexID)
+{
+    float2 corner = float2((id << 1) & 2, id & 2);
+    SceneOut o;
+    o.screen = corner * float2(2, -2) + float2(-1, 1);
+    o.pos = float4(o.screen, 1, 1);
+    return o;
+}
+
+float4 PSTerrain(SceneOut input) : SV_Target
+{
+    bool onTerrain;
+    float3 color = NavLinear(WorldAt(input.screen), onTerrain);
+    return onTerrain ? float4(color, 1) : 0;
+}
+
+// --- Offscreen map: landmark models -----------------------------------------------------------
+// Follows the disassembly of ModelNavigation.fxs. Instances are the engine's packed transforms.
+
+struct ModelIn
+{
+    float3 pos : POSITION;
+    float2 uv : TEXCOORD0;
+    float4 normal : TEXCOORD1;  // RGBA8, xyz biased
+    float4 place : INSTANCE0;   // world position, w = instance index
+    float4 rotation : INSTANCE1; // RGBA8 quaternion, biased
+    float4 scale : INSTANCE2;   // RGBA8, scale = z * 255 + w
+};
+
+struct ModelOut
+{
+    float4 pos : SV_Position;
+    float2 uv : TEXCOORD0;
+    float3 normal : TEXCOORD1;
+    float3 world : TEXCOORD2;
+    float shade : TEXCOORD3;
+};
+
+float3 RotateByQuaternion(float4 q, float3 v)
+{
+    float3 t = 2 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
+ModelOut VSModel(ModelIn v)
+{
+    float4 q = normalize((v.rotation - 0.501961) * 2.007874);
+    float scale = dot(v.scale.zw, float2(255, 0.996094));
+    float3 world = RotateByQuaternion(q, v.pos * scale) + v.place.xyz;
+    // Like the game, pull anything beyond the terrain's edge back onto it.
+    float2 lo = g_navTerrain.xy;
+    world.xz -= 0.999 * (min(world.xz - lo - 0.5, 0) + max(world.xz + lo + 0.5, 0));
+
+    ModelOut o;
+    float2 screen = Rotate(world.xz - g_player, -g_mapRotation) / (g_metersAcross * 0.5);
+    o.pos = float4(screen, saturate(0.5 - world.y / 4000), 1);
+    o.uv = v.uv;
+    o.normal = RotateByQuaternion(q, (v.normal.xyz - 0.501960) * 2);
+    o.world = world;
+    o.shade = sin(v.place.w);
+    return o;
+}
+
+float4 PSModel(ModelOut input) : SV_Target
+{
+    float3 albedo = g_modelColour.w > 0.5 ? g_albedo.Sample(g_sampler, input.uv).rgb : 0.35;
+    float3 color = albedo * g_modelColour.rgb * (input.shade * 0.2 + 0.8);
+
+    // The game lights models from the side of its map camera's view and adds a Fresnel rim for its
+    // 45 degree tilt; "forward" is the direction the minimap's top shows.
+    float2 forward = MapForward();
+    float3 toLight = float3(-0.447214 * forward.y, 0.894427, 0.447214 * forward.x);
+    float3 n = input.normal;
+    color *= min(max(dot(toLight, n), 0) + 0.2, 1);
+    // Faces turned away from that camera never show on the map screen but do from straight above;
+    // they get the Fresnel of a camera facing the other way instead of a full-strength rim.
+    float3 e = ToEye();
+    float ndv = max(dot(n, e), dot(n, float3(-e.x, e.y, -e.z)));
+    color *= 1 + pow(saturate(1 - ndv), 2) * 4; // g_fFresnelPower 2, g_fFresnelScale 4
+
+    float2 uv = (input.world.xz - g_navTerrain.xy) / g_navTerrain.z;
+    return float4(ApplyFog(color, uv), 1);
 }
 
 float4 PSMain(VSOut input) : SV_Target
@@ -137,7 +267,7 @@ float4 PSMain(VSOut input) : SV_Target
 
     float2 screen = float2(input.local.x, -input.local.y);   // unit circle, y up
     float metersPerPx = g_metersAcross / g_rect.z;
-    float2 world = g_player + Rotate(screen * (g_metersAcross * 0.5), g_mapRotation);
+    float2 world = WorldAt(screen);
 
     // Terrain: the game's map-screen look when its inputs are captured, else a map texture where
     // we have one, otherwise a 100 m grid so movement is still readable.
@@ -150,10 +280,8 @@ float4 PSMain(VSOut input) : SV_Target
         onMap = onMap && all(reliefUv >= 0) && all(reliefUv <= 1);
     if (g_navTexel.w > 0.5)
     {
-        bool onTerrain;
-        color = NavColor(world, onTerrain);
-        if (!onTerrain)
-            color = 0;
+        float4 scene = g_scene.SampleLevel(g_linear, input.local * 0.5 + 0.5, 0);
+        color = ToneMap(scene.rgb) * scene.a;
     }
     else if (onMap)
     {

@@ -18,6 +18,7 @@ struct Settings {
     float opacity = 0.92f;
     bool mapScreenLook = true; // shade like the game's map screen (M) when its textures are captured
     float mapExposure = 1.47f; // the map screen's adapted exposure, as captured
+    bool mapModels = true;     // draw the map screen's landmark models (trees, rocks, buildings)
 
     // [keys] Windows virtual-key codes
     int keyToggle = 0x78;  // F9

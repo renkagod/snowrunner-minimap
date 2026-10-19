@@ -54,13 +54,29 @@ find_program(FXC fxc REQUIRED HINTS
     "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64")
 set(SHADER_SRC ${CMAKE_SOURCE_DIR}/src/render/minimap.hlsl)
 set(SHADER_OUT ${CMAKE_BINARY_DIR}/shaders)
-add_custom_command(
-    OUTPUT ${SHADER_OUT}/minimap_vs.h ${SHADER_OUT}/minimap_ps.h
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUT}
-    COMMAND ${FXC} /nologo /O3 /T vs_5_0 /E VSMain /Vn g_minimapVS /Fh ${SHADER_OUT}/minimap_vs.h ${SHADER_SRC}
-    COMMAND ${FXC} /nologo /O3 /T ps_5_0 /E PSMain /Vn g_minimapPS /Fh ${SHADER_OUT}/minimap_ps.h ${SHADER_SRC}
-    DEPENDS ${SHADER_SRC}
-    VERBATIM)
+# name|profile|entry point|array name
+set(SHADERS
+    "minimap_vs|vs_5_0|VSMain|g_minimapVS"
+    "minimap_ps|ps_5_0|PSMain|g_minimapPS"
+    "minimap_scene_vs|vs_5_0|VSScene|g_sceneVS"
+    "minimap_terrain_ps|ps_5_0|PSTerrain|g_terrainPS"
+    "minimap_model_vs|vs_5_0|VSModel|g_modelVS"
+    "minimap_model_ps|ps_5_0|PSModel|g_modelPS")
+set(SHADER_HEADERS)
+foreach(shader IN LISTS SHADERS)
+    string(REPLACE "|" ";" fields "${shader}")
+    list(GET fields 0 name)
+    list(GET fields 1 profile)
+    list(GET fields 2 entry)
+    list(GET fields 3 var)
+    add_custom_command(
+        OUTPUT ${SHADER_OUT}/${name}.h
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUT}
+        COMMAND ${FXC} /nologo /O3 /T ${profile} /E ${entry} /Vn ${var} /Fh ${SHADER_OUT}/${name}.h ${SHADER_SRC}
+        DEPENDS ${SHADER_SRC}
+        VERBATIM)
+    list(APPEND SHADER_HEADERS ${SHADER_OUT}/${name}.h)
+endforeach()
 
 add_library(SnowMinimap SHARED
     src/dllmain.cpp
@@ -76,11 +92,13 @@ add_library(SnowMinimap SHARED
     src/hooks/present_hook.cpp
     src/render/minimap_renderer.cpp
     src/render/game_terrain.cpp
+    src/render/level_maps.cpp
     src/render/map_texture.cpp
+    src/render/nav_models.cpp
+    src/render/pak.cpp
     src/render/pak_assets.cpp
     src/ui/overlay.cpp
-    ${SHADER_OUT}/minimap_vs.h
-    ${SHADER_OUT}/minimap_ps.h)
+    ${SHADER_HEADERS})
 set_target_properties(SnowMinimap PROPERTIES OUTPUT_NAME version)
 target_include_directories(SnowMinimap PRIVATE src ${SHADER_OUT} third_party/renderdoc)
 target_compile_options(SnowMinimap PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/W4;/permissive-;/utf-8>")

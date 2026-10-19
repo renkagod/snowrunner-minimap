@@ -142,8 +142,8 @@ DXGI_FORMAT ViewFormat(DXGI_FORMAT f)
 {
     switch (f) {
     case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
-    case DXGI_FORMAT_BC2_TYPELESS:
-    case DXGI_FORMAT_BC2_UNORM_SRGB: return DXGI_FORMAT_BC2_UNORM;
+    // The map screen samples the level colour map as sRGB (checked in a capture: BC2_UNORM_SRGB view).
+    case DXGI_FORMAT_BC2_TYPELESS: return DXGI_FORMAT_BC2_UNORM_SRGB;
     case DXGI_FORMAT_R8_TYPELESS: return DXGI_FORMAT_R8_UNORM;
     case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
     default: return f;

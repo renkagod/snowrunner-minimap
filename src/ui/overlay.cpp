@@ -7,8 +7,10 @@
 #include "game/memory.h"
 #include "dev/renderdoc.h"
 #include "render/game_terrain.h"
+#include "render/level_maps.h"
 #include "render/map_texture.h"
 #include "render/minimap_renderer.h"
+#include "render/nav_models.h"
 #include "render/pak_assets.h"
 
 #include <d3d11_1.h>
@@ -42,6 +44,8 @@ render::MinimapRenderer g_renderer;
 render::GameTerrain g_gameTerrain;
 render::NavTextures g_navTextures;     // live inputs of the game's map-screen shading
 render::PakAssets g_pakAssets;
+render::NavModels g_navModels;          // landmark models of the map screen
+render::LevelMaps g_levelMaps;          // colour map from the paks and live fog of war
 render::MapTexture g_map("");          // colour image from the paks, used until the game's bake is found
 render::MapTexture g_relief("_relief"); // shading laid over the game's unshaded bake
 
@@ -186,6 +190,7 @@ void DrawDebugWindow(const game::TruckPose& pose)
         ImGui::Text("Session slot: %s (scans: %d)", ExeOffset(scan.levelSlot).c_str(), scan.levelScans);
         ImGui::Text("TRUCK_CONTROL: %s, vtables %zu (scans: %d)", ExeOffset(scan.truckSlot).c_str(), scan.truckVtables,
                     scan.truckScans);
+        ImGui::Text("GAME_LOGIC: %s", ExeOffset(scan.gameLogicSlot).c_str());
         ImGui::Text("Back buffer: %ux%u format %d", g_backBufferW, g_backBufferH, static_cast<int>(g_backBufferFormat));
     }
 
@@ -206,7 +211,9 @@ void DrawDebugWindow(const game::TruckPose& pose)
 
     if (ImGui::CollapsingHeader("Map", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextUnformatted(g_navTextures.Status().c_str());
+        ImGui::TextWrapped("Level maps: %s", g_levelMaps.Status().c_str());
         ImGui::Text("%s; terrain max height %.1f m", g_pakAssets.Status().c_str(), game::TerrainMaxHeight());
+        ImGui::TextWrapped("Models: %s", g_navModels.Status().c_str());
         ImGui::TextUnformatted(g_gameTerrain.Status().c_str());
         ImGui::TextUnformatted(g_map.Status().c_str());
         ImGui::TextUnformatted(g_relief.Status().c_str());
@@ -221,6 +228,8 @@ void DrawDebugWindow(const game::TruckPose& pose)
         ImGui::Checkbox("Rotate with truck", &cfg.rotateWithTruck);
         ImGui::SameLine();
         ImGui::Checkbox("Map screen look", &cfg.mapScreenLook);
+        ImGui::SameLine();
+        ImGui::Checkbox("Models", &cfg.mapModels);
         ImGui::SliderFloat("Map exposure", &cfg.mapExposure, 0.3f, 4.0f, "%.2f");
         ImGui::SliderInt("Size (px at 1080p)", &cfg.sizePx, 120, 700);
         ImGui::SliderFloat("Metres across", &cfg.metersAcross, 25, 4000, "%.0f", ImGuiSliderFlags_Logarithmic);
@@ -299,6 +308,8 @@ void OnPresent(IDXGISwapChain* swapChain)
     g_gameTerrain.Update(g_device, g_context);
     g_navTextures.Update(g_device);
     g_pakAssets.Load(g_device);
+    g_navModels.Update(g_device, game::GetLevelNavData());
+    g_levelMaps.Update(g_device, g_context, inLevel ? level : std::string());
     game::SetHeightMapSize(g_navTextures.HeightSize());
     g_context->OMSetRenderTargets(1, &rtv, nullptr);
 
@@ -333,18 +344,22 @@ void OnPresent(IDXGISwapChain* swapChain)
                            -(g_gameTerrain.Height() * kGameTerrainMetersPerPixel)};
             relief = {g_relief.Srv(), terrain};
         }
-        // Best of all: the game's own map-screen shading, fed with its live textures.
+        // Best of all: the game's own map-screen shading. The colour map and the fog of war come from
+        // the paks and the engine's memory; the game's own copies (made when the map screen is opened)
+        // stand in until those are loaded.
         render::NavInputs nav;
-        if (cfg.mapScreenLook && g_navTextures.Ready() && g_pakAssets.Ready()) {
-            nav.tint = g_navTextures.Tint();
-            nav.cloaking = g_navTextures.Cloaking();
+        if (cfg.mapScreenLook && g_pakAssets.Ready()) {
+            nav.tint = g_levelMaps.Tint() ? g_levelMaps.Tint() : g_navTextures.Tint();
+            nav.cloaking = g_levelMaps.Fog() ? g_levelMaps.Fog() : g_navTextures.Cloaking();
+            nav.cloakingSize = g_levelMaps.Fog() ? g_levelMaps.FogSize() : g_navTextures.CloakingSize();
             nav.height = g_navTextures.Height();
-            nav.cloakingSize = g_navTextures.CloakingSize();
             nav.heightSize = g_navTextures.HeightSize();
             nav.detail = g_pakAssets.Detail();
             nav.lut = g_pakAssets.Lut();
             nav.maxHeight = game::TerrainMaxHeight();
             nav.exposure = cfg.mapExposure;
+            if (cfg.mapModels)
+                nav.models = &g_navModels;
         }
         g_renderer.Draw(g_context, frame, colour, relief, nav);
     }
