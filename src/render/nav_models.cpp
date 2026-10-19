@@ -428,14 +428,18 @@ void NavModels::Build(ID3D11Device* device, const game::LevelNavData& data)
 }
 
 // Single objects: each placement keeps the engine's full transform. Objects tied to a task show their
-// unfinished look (the engine hides the "_complete" and "_navigation" nodes until the task is done);
-// the others show every node.
+// unfinished look until it is done, then their finished one: sub_8d7710 hides the "_complete" and
+// "_navigation" nodes, or shows only them. The others show every node.
 void NavModels::BuildObjects(ID3D11Device* device, const game::LevelNavData& data)
 {
     m_objects.clear();
     SafeRelease(m_objectBuffer);
     m_objectCapacity = 0;
 
+    enum Look { kFree, kUnfinished, kFinished, kLooks };
+    const auto finished = [&](const std::string& task) {
+        return m_finishedTasks && std::binary_search(m_finishedTasks->begin(), m_finishedTasks->end(), task);
+    };
     size_t total = 0, missing = 0;
     for (const auto& source : data.objectGroups) {
         const Mesh* mesh = LoadMesh(device, source.model);
@@ -443,12 +447,13 @@ void NavModels::BuildObjects(ID3D11Device* device, const game::LevelNavData& dat
             missing += source.objects.size();
             continue;
         }
-        ObjectGroup groups[2]; // free-standing, tied to a task
-        for (int objective = 0; objective < 2; ++objective) {
-            groups[objective].mesh = mesh;
+        ObjectGroup groups[kLooks];
+        for (int look = 0; look < kLooks; ++look) {
+            groups[look].mesh = mesh;
             for (const Part& part : mesh->parts) {
-                if (!objective || (!part.node.ends_with("_complete") && !part.node.ends_with("_navigation")))
-                    groups[objective].parts.push_back(&part);
+                const bool finishedPart = part.node.ends_with("_complete") || part.node.ends_with("_navigation");
+                if (look == kFree || finishedPart == (look == kFinished))
+                    groups[look].parts.push_back(&part);
             }
         }
         for (const game::NavObject& o : source.objects) {
@@ -456,7 +461,8 @@ void NavModels::BuildObjects(ID3D11Device* device, const game::LevelNavData& dat
             for (int r = 0; r < 3; ++r)
                 for (int c = 0; c < 4; ++c)
                     instance.rows[r][c] = o.world[c * 4 + r];
-            groups[o.objective ? 1 : 0].objects.push_back(instance);
+            const Look look = o.task.empty() ? kFree : finished(o.task) ? kFinished : kUnfinished;
+            groups[look].objects.push_back(instance);
         }
         for (ObjectGroup& group : groups) {
             if (group.objects.empty() || group.parts.empty())
@@ -479,10 +485,16 @@ void NavModels::BuildObjects(ID3D11Device* device, const game::LevelNavData& dat
         m_objectCapacity = total;
 }
 
-void NavModels::Update(ID3D11Device* device, const std::shared_ptr<const game::LevelNavData>& data)
+void NavModels::Update(ID3D11Device* device, const std::shared_ptr<const game::LevelNavData>& data,
+                       const std::shared_ptr<const std::vector<std::string>>& finishedTasks)
 {
-    if (!data || data == m_data)
+    const bool tasksChanged = finishedTasks != m_finishedTasks;
+    m_finishedTasks = finishedTasks;
+    if (!data || data == m_data) {
+        if (tasksChanged && m_data && m_pak && m_pak->IsOpen())
+            BuildObjects(device, *m_data);
         return;
+    }
     m_data = data;
     if (!m_pak) {
         m_pak = std::make_unique<Pak>();

@@ -308,7 +308,7 @@ void OnPresent(IDXGISwapChain* swapChain)
     g_gameTerrain.Update(g_device, g_context);
     g_navTextures.Update(g_device);
     g_pakAssets.Load(g_device);
-    g_navModels.Update(g_device, game::GetLevelNavData());
+    g_navModels.Update(g_device, game::GetLevelNavData(), game::GetFinishedTasks());
     g_levelMaps.Update(g_device, g_context, inLevel ? level : std::string());
     game::SetHeightMapSize(g_navTextures.HeightSize());
     g_context->OMSetRenderTargets(1, &rtv, nullptr);

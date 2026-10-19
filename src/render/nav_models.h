@@ -40,8 +40,10 @@ struct NavModelDraw {
 // Render thread only.
 class NavModels {
 public:
-    // Rebuilds when the level's placement changes; meshes are cached across levels.
-    void Update(ID3D11Device* device, const std::shared_ptr<const game::LevelNavData>& data);
+    // Rebuilds when the level's placement changes, and the single objects when the finished tasks
+    // (game::GetFinishedTasks) do; meshes are cached across levels.
+    void Update(ID3D11Device* device, const std::shared_ptr<const game::LevelNavData>& data,
+                const std::shared_ptr<const std::vector<std::string>>& finishedTasks);
     // Copies the instances and objects within radius metres of (x, z) into the instance buffers and
     // returns the draws that show them, packed instances first.
     const std::vector<NavModelDraw>& Collect(ID3D11DeviceContext* context, float x, float z, float radius);
@@ -89,6 +91,7 @@ private:
     std::map<std::string, Mesh> m_meshes;
     std::map<std::string, ID3D11ShaderResourceView*> m_albedos; // by AlbedoMap, null when unreadable
     std::shared_ptr<const game::LevelNavData> m_data;
+    std::shared_ptr<const std::vector<std::string>> m_finishedTasks; // sorted, may be null
     std::vector<Group> m_groups;
     float m_originX = 0, m_originZ = 0;
     int m_cellsX = 0, m_cellsZ = 0;

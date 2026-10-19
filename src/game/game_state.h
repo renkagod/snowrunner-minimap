@@ -38,7 +38,8 @@ struct NavInstanceGroup {
 // One placement of a map-screen model that the engine draws on its own, with a full transform.
 struct NavObject {
     float world[16]; // row-vector 4x4: model point * world = world point, translation in row 3
-    bool objective;  // tied to a task: the map shows it built or not, by the task's state
+    std::string task; // tied to a task: tag of the level model it stands for (e.g. a bridge construction
+                      // site), whose state picks the built or unbuilt look; empty for other objects
 };
 
 struct NavObjectGroup {
@@ -88,6 +89,12 @@ bool IsScreenOpen();
 // The current level's map-screen model placement, null until it has been read. A new object is
 // published when the level changes, so comparing pointers tells when to rebuild.
 std::shared_ptr<const LevelNavData> GetLevelNavData();
+
+// Tags of the current level's task models that are finished, sorted: the level model with that tag
+// shows the last of its model states (e.g. a bridge's "build_complete", a landslide's "stage_hidden"),
+// which is when the map screen switches the matching objects to their finished look. Checked every
+// second; a new object is published when the set changes. Null until the models have been read.
+std::shared_ptr<const std::vector<std::string>> GetFinishedTasks();
 
 // The current level's fog of war, live, as the map screen shows it: one byte per cell, 0 hidden,
 // 128 explored, 255 revealed; row 0 is the south edge. False until the engine's fog object is found.

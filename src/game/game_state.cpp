@@ -49,6 +49,18 @@ constexpr uintptr_t kNodeNext = 0x00;          // node*
 constexpr uintptr_t kNodeKey = 0x08;           // engine string; set for objects tied to a task
 constexpr uintptr_t kNodeWorld = 0x20;         // float 4x4, row vectors
 
+// The level's models: combine::TERRAIN (GAME_LOGIC+0x08) lists them at +0x178 as {MODEL**, int count,
+// int capacity}. A model placed for a task carries the tag the map objects above use as their key, and
+// shows one of the <Subset>s of its class XML at a time (build_stage_0, build_stage_1, build_complete):
+// sub_c5dca0 loads them, sub_c5c5c0 switches by name, sub_c5fec0 applies one and stores its index.
+constexpr uintptr_t kTerrain = 0x08;
+constexpr uintptr_t kTerrainModels = 0x178;
+constexpr uintptr_t kTerrainModelCount = 0x180; // int
+constexpr uintptr_t kModelTag = 0x90;           // std::string
+constexpr uintptr_t kModelSubsets = 0x1b8;      // std::vector of subsets, each starting with its std::string name
+constexpr size_t kSubsetSize = 0x68;
+constexpr uintptr_t kModelSubset = 0x1ec;       // int, index of the subset shown
+
 // Fog of war, one object per level of the region (FogOfWar.cpp; the minimap's update binding
 // sub_9b4250 hands +0x08 to sub_8d5170, which uploads it as the map screen's g_txCloaking).
 constexpr uintptr_t kFogCells = 0x08;  // u8*, then u32 width, u32 height
@@ -71,9 +83,11 @@ static std::atomic<unsigned> g_heightMapSize{0};
 static std::atomic<float> g_maxHeight{0};
 
 static std::vector<uintptr_t> g_gameLogicVtables; // scanner thread only
+static std::vector<uintptr_t> g_terrainVtables;   // scanner thread only
 static std::atomic<uintptr_t> g_gameLogicSlot{0};
 static std::mutex g_navMutex;
 static std::shared_ptr<const LevelNavData> g_navData;
+static std::shared_ptr<const std::vector<std::string>> g_finishedTasks;
 
 static std::atomic<uintptr_t> g_fogObject{0};
 
@@ -190,6 +204,20 @@ static bool ReadEngineString(uintptr_t address, std::string& out)
     return mem::SafeCopy(out.data(), chars, header[0]);
 }
 
+// MSVC's std::string: a 16-byte buffer (or a pointer once the capacity reaches 16), size, capacity.
+static bool ReadStdString(uintptr_t address, std::string& out)
+{
+    uint64_t size = 0, capacity = 0;
+    if (!mem::Read(address + 0x10, size) || !mem::Read(address + 0x18, capacity) || size > 255 || capacity < size ||
+        capacity < 15)
+        return false;
+    uintptr_t chars = address;
+    if (capacity >= 16 && (!mem::Read(address, chars) || !mem::IsPlausibleHeapPtr(chars)))
+        return false;
+    out.resize(size);
+    return mem::SafeCopy(out.data(), chars, size);
+}
+
 // The models the engine places one by one, each with its full transform (levelData+0x48).
 static bool ReadLevelObjects(uintptr_t data, LevelNavData& out)
 {
@@ -218,10 +246,10 @@ static bool ReadLevelObjects(uintptr_t data, LevelNavData& out)
                 NavObject o;
                 uint32_t keyLength = 0;
                 if (!mem::SafeCopy(o.world, node + layout::kNodeWorld, sizeof(o.world)) ||
-                    !mem::Read(node + layout::kNodeKey, keyLength))
+                    !mem::Read(node + layout::kNodeKey, keyLength) ||
+                    (keyLength && !ReadEngineString(node + layout::kNodeKey, o.task)))
                     return false;
-                o.objective = keyLength != 0;
-                g.objects.push_back(o);
+                g.objects.push_back(std::move(o));
                 if (!mem::Read(node + layout::kNodeNext, node))
                     return false;
             }
@@ -270,6 +298,38 @@ static std::shared_ptr<LevelNavData> ReadLevelNavData(uintptr_t gameLogic, const
         out->objectCount = 0;
     }
     return out;
+}
+
+// Tags of the level models that show the last of their subsets, sorted. The map screen's objects keep
+// their unfinished look until the task model behind their key reaches that state.
+static bool ReadFinishedTasks(uintptr_t gameLogic, std::vector<std::string>& out)
+{
+    out.clear();
+    uintptr_t terrain = 0, models = 0;
+    int32_t count = 0;
+    if (!mem::Read(gameLogic + layout::kTerrain, terrain) || !mem::IsPlausibleHeapPtr(terrain) ||
+        !HasVtable(terrain, g_terrainVtables) || !mem::Read(terrain + layout::kTerrainModels, models) ||
+        !mem::Read(terrain + layout::kTerrainModelCount, count) || count < 0 || count > 1'000'000)
+        return false;
+    std::vector<uintptr_t> list(static_cast<size_t>(count));
+    if (!list.empty() && !mem::SafeCopy(list.data(), models, list.size() * sizeof(uintptr_t)))
+        return false;
+    for (uintptr_t model : list) {
+        uintptr_t subsets[2]; // begin, end
+        int32_t shown = -1;
+        std::string tag;
+        if (!mem::SafeCopy(subsets, model + layout::kModelSubsets, sizeof(subsets)) || subsets[1] < subsets[0] ||
+            (subsets[1] - subsets[0]) % layout::kSubsetSize != 0)
+            continue;
+        const size_t subsetCount = (subsets[1] - subsets[0]) / layout::kSubsetSize;
+        if (subsetCount < 2 || subsetCount > 64 || !mem::Read(model + layout::kModelSubset, shown) ||
+            shown != static_cast<int32_t>(subsetCount) - 1 || !ReadStdString(model + layout::kModelTag, tag) || tag.empty())
+            continue;
+        out.push_back(std::move(tag));
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return true;
 }
 
 // Reads a fog object's cells if it looks like the fog of war of the given level.
@@ -346,6 +406,8 @@ static void ScannerThread()
         logger::Info("  vtable at exe+{:#x}", v - mem::Game().base);
     g_gameLogicVtables = mem::FindVtablesForType(".?AVGAME_LOGIC@combine@@");
     logger::Info("GAME_LOGIC vtables found: {}", g_gameLogicVtables.size());
+    g_terrainVtables = mem::FindVtablesForType(".?AVTERRAIN@combine@@");
+    logger::Info("TERRAIN vtables found: {}", g_terrainVtables.size());
     std::string navLevel; // level whose model placement has been published
 
     int levelMisses = 0;
@@ -399,6 +461,21 @@ static void ScannerThread()
                 navLevel = level;
                 std::lock_guard lock(g_navMutex);
                 g_navData = std::move(nav);
+            }
+        }
+
+        // Task models' states, which switch while driving (a bridge gets built, a landslide cleared).
+        static std::string tasksLevel;
+        std::vector<std::string> finished;
+        if (playable && gameLogic && ReadFinishedTasks(gameLogic, finished)) {
+            std::lock_guard lock(g_navMutex);
+            if (level != tasksLevel || !g_finishedTasks || *g_finishedTasks != finished) {
+                std::string list;
+                for (const std::string& tag : finished)
+                    list += (list.empty() ? "" : ", ") + tag;
+                logger::Info("Finished task models of '{}': {}", level, list.empty() ? "none" : list);
+                tasksLevel = level;
+                g_finishedTasks = std::make_shared<const std::vector<std::string>>(std::move(finished));
             }
         }
 
@@ -521,6 +598,12 @@ std::shared_ptr<const LevelNavData> GetLevelNavData()
 {
     std::lock_guard lock(g_navMutex);
     return g_navData;
+}
+
+std::shared_ptr<const std::vector<std::string>> GetFinishedTasks()
+{
+    std::lock_guard lock(g_navMutex);
+    return g_finishedTasks;
 }
 
 bool ReadFogOfWar(std::vector<uint8_t>& cells, unsigned& width, unsigned& height)
