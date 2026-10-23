@@ -1,5 +1,6 @@
 # SnowRunner Minimap
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Donate](https://img.shields.io/badge/Donate-crypto-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/renkagod/.github/blob/main/DONATE.md)
 
 Real-time minimap for SnowRunner. It draws a Direct3D 11 overlay on top of the game and loads through a `version.dll` proxy placed next to the game executable.
@@ -57,3 +58,7 @@ Keys are set in `[keys]` (`toggle`, `debug`, `zoom_in`, `zoom_out`) as Windows v
 ## Support
 
 If this project is useful to you, you can support it with crypto: [donation addresses](https://github.com/renkagod/.github/blob/main/DONATE.md).
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 [renkagod](https://github.com/renkagod).
